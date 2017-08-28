@@ -2,20 +2,22 @@
 # Date: 8/27/17
 # Description: This is a simple unencrypted messenger program that allows messages to be passed to another instance
 #   of the program running on a different machine using TCP. The program is configured to
-#   operate on port 9999.
+#   operate on port 9456.
 # Example command line usage:
 #   run >python.exe UnencryptedIM.py -s< on the server machine.
 #   run >python.exe UnencryptedIM.py -c serverIPAddr< on the client machine.
 
 import socket
 import sys
-import threading
-import os
+import select
 
 # Configured by command line flags.
 is_server = False
 is_client = False
 remote_host = ""
+
+# Port number global var used for both the client and host versions of the program.
+port = 9456
 
 if len(sys.argv) is 1:
     print("Please provide -s or -c to indicate client or server mode.")
@@ -24,11 +26,11 @@ if len(sys.argv) is 1:
 if sys.argv[1] == "-help":
     print("Description: This is a simple unencrypted messenger program that allows messages to be passed to another instance\
     \n\tof the program running on a different machine using TCP. The program is configured to \
-    \n\toperate on port 9999.")
+    \n\toperate on port 9456.")
 
     print("Example command line usage:\
-    \n\trun >python.exe UnencryptedIM.py -s< on the server machine.\
-    \n\trun >python.exe UnencryptedIM.py -c serverIPAddr< on the client machine.")
+    \n\trun >python.exe UnencryptedIM.py.py -s< on the server machine.\
+    \n\trun >python.exe UnencryptedIM.py.py -c serverIPAddr< on the client machine.")
 
 if sys.argv[1] == "-s":
     is_server = True
@@ -38,58 +40,97 @@ if sys.argv[1] == "-c":
     try:
         remote_host = sys.argv[2]
     except:
-        # Default to a known IP address if the user did not specify one.
-        remote_host = "192.168.1.165"
+        print("Error: You must specify a destination address for client instances of the program.")
+        exit(1)
 
-def sending_thread(remote_addr):
-    while True:
-        # Open connection.
-        dest_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        dest_socket.connect((remote_addr, 9999))
-
-        # Collect user input.
-        msg = input()
-
-        # Send input and close connection.
-        dest_socket.sendall(msg.encode())
-        dest_socket.close()
-
-        if msg == "exit()":
-            os._exit(1)
-
-def receiving_thread():
-    # Track whether or not we've already created a sending_thread for server instances of this program.
-    remote_host_connected = False
+if is_server:
+    # print(socket.getaddrinfo(socket.gethostname(), 9456))  # DEV.
 
     # Prepare the receiving socket to use IPv4 TCP streaming.
     receiving_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    receiving_socket.bind((socket.gethostname(), 9999))
-    receiving_socket.listen()
+    receiving_socket.bind((socket.gethostname(), port))
+    receiving_socket.listen(5)
+
+    possibly_writeable_addrs = []
 
     while True:
-        # Wait for an incoming connection.
-        client_socket, client_addr = receiving_socket.accept()
 
-        # If this program is a server and this is the first message we have received, set up a sending_thread
-        # pointed at the address we received a message from so we can send messages back.
-        if is_server and remote_host_connected is not True:
-            remote_host_connected = True
-            threading.Thread(target=sending_thread, args=[client_addr[0]]).start()
+        ready_receive, ready_write, had_error = \
+            select.select([receiving_socket, sys.stdin], [], [], 10)
 
-        msg = client_socket.recv(4096)
-        print(msg.decode())
-        client_socket.close()
+        for rr in ready_receive:
 
-        if msg.decode() == "exit()":
-            os._exit(1)
+            if rr is receiving_socket:
+                remote_socket, remote_addr = receiving_socket.accept()
 
-if is_server:
-    # print(socket.getaddrinfo(socket.gethostname(), 9999))  # DEV.
+                already_added = False
+                for addr in possibly_writeable_addrs:
+                    if remote_addr[0] == addr[0]:
+                        already_added = True;
+                        break
 
-    # Set up a receiver but don't attempt to connect to any remote hosts yet.
-    threading.Thread(target=receiving_thread).start()
+                if not already_added:
+                    possibly_writeable_addrs.append((remote_addr[0], port))
+                    print("Current possibilities:", possibly_writeable_addrs)
+
+                msg = remote_socket.recv(4096)
+                print(msg.decode())
+
+                # Convenient way to close both sides of the program.
+                if msg.decode() == "exit()":
+                    exit(1)
+
+                remote_socket.close()
+
+            if rr is sys.stdin:
+                msg = sys.stdin.readline()
+                print()
+                for p_addr in possibly_writeable_addrs:
+                    try:
+                        dest_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        dest_socket.connect(p_addr)
+                        dest_socket.sendall(msg.encode())
+                        dest_socket.close()
+                    except:
+                        possibly_writeable_addrs.remove(p_addr)
+
+                if msg == "exit()":
+                    exit(1)
 
 if is_client:
-    # Set up a receiver, and then attempt to connect the sender to a remote host.
-    threading.Thread(target=receiving_thread).start()
-    threading.Thread(target=sending_thread, args=[remote_host]).start()
+
+    # Prepare the receiving socket to use IPv4 TCP streaming.
+    receiving_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    receiving_socket.bind((socket.gethostname(), port))
+    receiving_socket.listen(5)
+
+    while True:
+
+        ready_receive, ready_write, had_error = \
+            select.select([receiving_socket, sys.stdin], [], [], 10)
+
+        for rr in ready_receive:
+
+            if rr is receiving_socket:
+                remote_socket, remote_addr = receiving_socket.accept()
+
+                msg = remote_socket.recv(4096)
+                print(msg.decode())
+
+                remote_socket.close()
+
+                # Convenient way to close both sides of the program.
+                if msg.decode() == "exit()":
+                    exit(1)
+
+            if rr is sys.stdin:
+                msg = sys.stdin.readline()
+                print()
+                dest_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                dest_socket.connect((remote_host, port))
+                dest_socket.sendall(msg.encode())
+                dest_socket.close()
+
+                # Convenient way to close both sides of the program.
+                if msg == "exit()":
+                    exit(1)
