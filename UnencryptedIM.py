@@ -65,7 +65,6 @@ if is_server:
                         break
                 if not already_added:
                     possibly_writeable_addrs.append((remote_addr[0], port))
-                    print("Current possibilities:", possibly_writeable_addrs)
 
                 msg = remote_socket.recv(4096)
                 print(msg.decode())
